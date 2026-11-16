@@ -13,9 +13,9 @@ while true; do
   ln -sf dmesg-$BID.txt /var/log/a51/dmesg.txt
   [ $i -eq 0 ] && ls -t /var/log/a51/dmesg-*.txt 2>/dev/null | tail -n +9 | xargs -r rm -f
   { date; ip -br addr; sv status /etc/service-native/* 2>&1; } > /var/log/a51/status.txt
-  # "Saudável" = alguém consegue de fato entrar: SSH escutando E (Wi-Fi com IPv4 OU o PC pegou IP pelo cabo USB)
+  # "Saudável" = alguém consegue de fato entrar: SSH escutando E (Wi-Fi com IPv4, PC pegou IP via USB, ou console USB ativo)
   if [ ! -f /var/log/a51/healthy-$BID ] && grep -q ':0016 [0-9A-F:]* 0A' /proc/net/tcp /proc/net/tcp6 2>/dev/null \
-     && { ip -4 addr show wlan0 | grep -q inet || busybox dumpleases -f /run/udhcpd-usb.leases 2>/dev/null | grep -q 10.15.19; }; then
+     && { ip -4 addr show wlan0 | grep -q inet || busybox dumpleases -f /run/udhcpd-usb.leases 2>/dev/null | grep -q 10.15.19 || grep -q CONFIGURED /sys/class/android_usb/android0/state 2>/dev/null; }; then
     { date; ip -4 -br addr; } > /var/log/a51/healthy-$BID
     echo "$(date '+%F %T') SAUDAVEL: ssh + rede" >> /var/log/a51/boot.log
   fi

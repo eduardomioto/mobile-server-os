@@ -9,9 +9,11 @@ log() { echo "a51-runit1: $*" > /dev/kmsg; echo "$(date '+%F %T') $*" >> /var/lo
 
 mountpoint -q /proc    || mount -t proc proc /proc
 mountpoint -q /sys     || mount -t sysfs sysfs /sys
-mountpoint -q /dev     || mount -t devtmpfs devtmpfs /dev
+mountpoint -q /dev     || mount -t devtmpfs devtmpfs /dev 2>/dev/null || mount -t tmpfs -o mode=0755 tmpfs /dev
+busybox mdev -s 2>/dev/null || true
+chmod 666 /dev/null /dev/zero /dev/full /dev/random /dev/urandom /dev/tty /dev/ptmx 2>/dev/null || true
 mkdir -p /dev/pts /dev/shm
-mountpoint -q /dev/pts || mount -t devpts -o gid=5,mode=620,ptmxmode=000 devpts /dev/pts
+mountpoint -q /dev/pts || mount -t devpts -o gid=5,mode=620,ptmxmode=666 devpts /dev/pts
 mountpoint -q /dev/shm || mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /dev/shm
 mountpoint -q /run     || mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs /run
 mountpoint -q /tmp     || mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /tmp
@@ -23,33 +25,39 @@ part() { for u in /sys/class/block/*/uevent; do
            grep -qx "PARTNAME=$1" "$u" && { echo "/dev/$(sed -n 's/^DEVNAME=//p' "$u")"; return 0; }; done; return 1; }
 
 # EFS somente leitura: o driver do Wi-Fi lê o MAC em /efs/wifi/.mac.info. NUNCA montar com escrita.
+mkdir -p /efs
 EFS=$(part efs) && mount -t ext4 -o ro,nosuid,nodev,noexec "$EFS" /efs && log "efs montada ro ($EFS)" || log "efs NAO montada"
 
-hostname a51-server
+hostname "$(cat /etc/hostname 2>/dev/null || echo a51-server)"
 ip link set lo up
 
-# Rede pelo cabo USB (NCM, criada no initramfs): IP fixo para manutenção mesmo sem Wi-Fi.
-# No PC: dar ao adaptador "USB NCM" o IP 10.15.19.1/24 e acessar ssh server@10.15.19.82
-# Neste kernel Samsung a interface NCM se chama ncm0 (em kernels comuns, usb0). O serviço udhcpd entrega IP ao PC.
+# Rede pelo cabo USB (NCM ou RNDIS, criada no initramfs): IP fixo para manutenção mesmo sem Wi-Fi.
+# No PC: dar ao adaptador USB o IP 10.15.19.1/24 e acessar ssh server@10.15.19.82
+# No A51 a interface chama-se ncm0; no Motorola One Vision (kane), rndis0 (ou usb0). O udhcpd entrega IP ao PC.
 USBIF=""
-for i in 1 2 3 4 5 6 7 8 9 10; do for c in ncm0 usb0; do [ -e /sys/class/net/$c ] && USBIF=$c; done; [ -n "$USBIF" ] && break; sleep 1; done
+for i in 1 2 3 4 5 6 7 8 9 10; do for c in ncm0 rndis0 usb0; do [ -e /sys/class/net/$c ] && USBIF=$c; done; [ -n "$USBIF" ] && break; sleep 1; done
 if [ -n "$USBIF" ]; then ip addr add 10.15.19.82/24 dev "$USBIF" 2>/dev/null; ip link set "$USBIF" up && log "$USBIF 10.15.19.82"; echo "$USBIF" > /run/a51-usbif
-else log "sem interface de rede USB (ncm0/usb0)"; fi
+else log "sem interface de rede USB (ncm0/rndis0/usb0)"; fi
 
 # Pane por tarefa bloqueada: desligada também aqui (o initramfs já faz; ver /init).
 echo 0 > /proc/sys/kernel/hung_task_panic 2>/dev/null
+echo 0 > /proc/sys/kernel/hung_task_timeout_secs 2>/dev/null
 
-# CPU sempre acordada (sem Android ninguém pede suspensão, mas fica garantido) e tela apagada (AMOLED, energia).
+# CPU sempre acordada (sem Android ninguém pede suspensão, mas fica garantido) e tela apagada (AMOLED/IPS, energia).
 # Só o brilho 0 não basta neste painel: o "blank 4" (POWERDOWN) desliga o display de verdade.
 echo a51-server > /sys/power/wake_lock 2>/dev/null
 for b in /sys/class/backlight/*/brightness; do echo 0 > "$b" 2>/dev/null; done
 echo 4 > /sys/class/graphics/fb0/blank 2>/dev/null && log "painel desligado (fb0 blank)"
 
-# Bateria: limitar a carga em 85% (o mesmo controle do "Proteger bateria" do One UI). Servidor 24 h na tomada
-# a 100% acelera o desgaste e o risco de a bateria estufar.
-echo 85 > /sys/class/power_supply/battery/batt_full_capacity 2>/dev/null && log "bateria limitada a 85%"
+# Bateria: limitar a carga em 85% (batt_full_capacity na Samsung; charging_enabled na Motorola via dash-sensores).
+if [ -e /sys/class/power_supply/battery/batt_full_capacity ]; then
+  echo 85 > /sys/class/power_supply/battery/batt_full_capacity 2>/dev/null && log "bateria limitada a 85%"
+elif [ -e /sys/class/power_supply/battery/charging_enabled ]; then
+  log "bateria: limite de 85% gerenciado via charging_enabled"
+fi
 
 # Wi-Fi: subir a interface faz o driver scsc_wlbt carregar /vendor/etc/wifi/mx140.bin
+echo -n "/vendor/etc/wifi:/vendor/firmware:/lib/firmware" > /sys/module/firmware_class/parameters/path 2>/dev/null
 for i in 1 2 3 4 5 6 7 8 9 10; do [ -e /sys/class/net/wlan0 ] && break; sleep 1; done
 ip link set wlan0 up && log "wlan0 up" || log "wlan0 FALHOU"
 

@@ -14,8 +14,9 @@ nenhum Android rodando**, usando o próprio kernel da Samsung. No fim do guia o 
 
 > 🇺🇸 English version: [README.md](README.md)
 
-> **Testado em uma única configuração:** SM-A515F, bootloader **U8** (`A515FXXU8HWK1`, Android 13 / One UI 5.1).
-> Outras revisões de bootloader ou variantes (A515U/W/FN, A51 5G) podem se comportar diferente. Leia antes [docs/LESSONS-LEARNED.md](docs/LESSONS-LEARNED.md) (em inglês).
+> **Aparelhos testados e documentados:**
+> - **Samsung Galaxy A51 (`SM-A515F`)**, bootloader **U8** (`A515FXXU8HWK1`, Android 13 / One UI 5.1) — veja [docs/LESSONS-LEARNED.md](docs/LESSONS-LEARNED.md) e [docs/HARDWARE-AUDIT.md](docs/HARDWARE-AUDIT.md).
+> - **Motorola One Vision (`XT1970-1` / `kane`)**, SoC Exynos 9609, kernel `4.14.357` — veja o guia completo e auditoria em [docs/MOTOROLA-ONE-VISION-KANE.md](docs/MOTOROLA-ONE-VISION-KANE.md).
 
 ## ⚠️ Leia antes de começar
 

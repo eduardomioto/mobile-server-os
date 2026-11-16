@@ -1,0 +1,6 @@
+#!/bin/sh
+# Painel de status nativo na tela física do aparelho (/dev/fb0).
+# Atualiza a cada 5 s; botão Power liga/desliga a tela; Volume +/- ajusta o brilho.
+exec 2>&1
+[ -e /dev/fb0 ] || { sleep 10; exit 1; }
+exec /usr/bin/python3 /usr/local/sbin/a51-fbstatus

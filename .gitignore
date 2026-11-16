@@ -9,6 +9,7 @@
 *.cpio.gz
 firmware/
 backup/
+kane-work/
 *.env
 authorized_keys
 id_*

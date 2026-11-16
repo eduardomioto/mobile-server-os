@@ -14,8 +14,9 @@ Android running**, on Samsung's own kernel. Once the guide is done the phone giv
 
 > 🇧🇷 Versão em português: [README.pt-BR.md](README.pt-BR.md)
 
-> **Tested on exactly one configuration:** SM-A515F, bootloader **U8** (`A515FXXU8HWK1`, Android 13 / One UI 5.1).
-> Other bootloader revisions or A51 variants (A515U/W/FN, A51 5G) may behave differently. Read [docs/LESSONS-LEARNED.md](docs/LESSONS-LEARNED.md) first.
+> **Tested and documented devices:**
+> - **Samsung Galaxy A51 (`SM-A515F`)**, bootloader **U8** (`A515FXXU8HWK1`, Android 13 / One UI 5.1) — see [docs/LESSONS-LEARNED.md](docs/LESSONS-LEARNED.md) and [docs/HARDWARE-AUDIT.md](docs/HARDWARE-AUDIT.md).
+> - **Motorola One Vision (`XT1970-1` / `kane`)**, Exynos 9609 SoC, kernel `4.14.357` — see the full guide and hardware audit in [docs/MOTOROLA-ONE-VISION-KANE.md](docs/MOTOROLA-ONE-VISION-KANE.md).
 
 ## ⚠️ Read this first
 

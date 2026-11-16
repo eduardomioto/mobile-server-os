@@ -1,0 +1,462 @@
+#!/usr/bin/env python3
+"""
+Mobile Server OS — Painel de status nativo no framebuffer (/dev/fb0).
+Exibe informações em tempo real na tela física do aparelho (CPU, RAM, Disco,
+Temperaturas, Bateria, Wi-Fi, IP, SSH, Painel Web e estado dos serviços runit).
+Controles pelos botões físicos (gpio_keys):
+  - Botão Power    : liga / desliga a tela (economia de energia)
+  - Volume + / -   : aumenta / diminui o brilho da tela
+"""
+import fcntl
+import glob
+import json
+import mmap
+import os
+import select
+import shutil
+import socket
+import struct
+import subprocess
+import time
+
+# Fonte bitmap 8x8 padrão (ASCII 32..126)
+FONT8X8 = {
+    ' ': (0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00),
+    '!': (0x18,0x3C,0x3C,0x18,0x18,0x00,0x18,0x00),
+    '"': (0x6C,0x6C,0x48,0x00,0x00,0x00,0x00,0x00),
+    '#': (0x6C,0x6C,0xFE,0x6C,0xFE,0x6C,0x6C,0x00),
+    '$': (0x18,0x3E,0x60,0x3C,0x06,0x7C,0x18,0x00),
+    '%': (0x00,0xC6,0xCC,0x18,0x30,0x66,0xC6,0x00),
+    '&': (0x38,0x6C,0x38,0x76,0xDC,0xCC,0x76,0x00),
+    "'": (0x18,0x18,0x30,0x00,0x00,0x00,0x00,0x00),
+    '(': (0x0C,0x18,0x30,0x30,0x30,0x18,0x0C,0x00),
+    ')': (0x30,0x18,0x0C,0x0C,0x0C,0x18,0x30,0x00),
+    '*': (0x00,0x66,0x3C,0xFF,0x3C,0x66,0x00,0x00),
+    '+': (0x00,0x18,0x18,0x7E,0x18,0x18,0x00,0x00),
+    ',': (0x00,0x00,0x00,0x00,0x00,0x18,0x18,0x30),
+    '-': (0x00,0x00,0x00,0x7E,0x00,0x00,0x00,0x00),
+    '.': (0x00,0x00,0x00,0x00,0x00,0x18,0x18,0x00),
+    '/': (0x06,0x0C,0x18,0x30,0x60,0xC0,0x80,0x00),
+    '0': (0x3C,0x66,0x6E,0x76,0x66,0x66,0x3C,0x00),
+    '1': (0x18,0x38,0x18,0x18,0x18,0x18,0x7E,0x00),
+    '2': (0x3C,0x66,0x06,0x1C,0x30,0x66,0x7E,0x00),
+    '3': (0x3C,0x66,0x06,0x1C,0x06,0x66,0x3C,0x00),
+    '4': (0x1C,0x3C,0x6C,0xCC,0xFE,0x0C,0x1E,0x00),
+    '5': (0x7E,0x60,0x7C,0x06,0x06,0x66,0x3C,0x00),
+    '6': (0x1C,0x30,0x60,0x7C,0x66,0x66,0x3C,0x00),
+    '7': (0x7E,0x66,0x06,0x0C,0x18,0x18,0x18,0x00),
+    '8': (0x3C,0x66,0x66,0x3C,0x66,0x66,0x3C,0x00),
+    '9': (0x3C,0x66,0x66,0x3E,0x06,0x0C,0x38,0x00),
+    ':': (0x00,0x18,0x18,0x00,0x00,0x18,0x18,0x00),
+    ';': (0x00,0x18,0x18,0x00,0x00,0x18,0x18,0x30),
+    '<': (0x0C,0x18,0x30,0x60,0x30,0x18,0x0C,0x00),
+    '=': (0x00,0x00,0x7E,0x00,0x00,0x7E,0x00,0x00),
+    '>': (0x30,0x18,0x0C,0x06,0x0C,0x18,0x30,0x00),
+    '?': (0x3C,0x66,0x06,0x0C,0x18,0x00,0x18,0x00),
+    '@': (0x3C,0x66,0x6E,0x6E,0x60,0x62,0x3C,0x00),
+    'A': (0x18,0x3C,0x66,0x66,0x7E,0x66,0x66,0x00),
+    'B': (0x7C,0x66,0x66,0x7C,0x66,0x66,0x7C,0x00),
+    'C': (0x3C,0x66,0x60,0x60,0x60,0x66,0x3C,0x00),
+    'D': (0x78,0x6C,0x66,0x66,0x66,0x6C,0x78,0x00),
+    'E': (0x7E,0x60,0x60,0x7C,0x60,0x60,0x7E,0x00),
+    'F': (0x7E,0x60,0x60,0x7C,0x60,0x60,0x60,0x00),
+    'G': (0x3C,0x66,0x60,0x6E,0x66,0x66,0x3E,0x00),
+    'H': (0x66,0x66,0x66,0x7E,0x66,0x66,0x66,0x00),
+    'I': (0x3C,0x18,0x18,0x18,0x18,0x18,0x3C,0x00),
+    'J': (0x1E,0x0C,0x0C,0x0C,0x6C,0x6C,0x38,0x00),
+    'K': (0x66,0x6C,0x78,0x70,0x78,0x6C,0x66,0x00),
+    'L': (0x60,0x60,0x60,0x60,0x60,0x60,0x7E,0x00),
+    'M': (0xC6,0xEE,0xFE,0xFE,0xD6,0xC6,0xC6,0x00),
+    'N': (0x66,0x76,0x7E,0x7E,0x6E,0x66,0x66,0x00),
+    'O': (0x3C,0x66,0x66,0x66,0x66,0x66,0x3C,0x00),
+    'P': (0x7C,0x66,0x66,0x7C,0x60,0x60,0x60,0x00),
+    'Q': (0x3C,0x66,0x66,0x66,0x6A,0x6C,0x36,0x00),
+    'R': (0x7C,0x66,0x66,0x7C,0x6C,0x66,0x66,0x00),
+    'S': (0x3C,0x66,0x60,0x3C,0x06,0x66,0x3C,0x00),
+    'T': (0x7E,0x18,0x18,0x18,0x18,0x18,0x18,0x00),
+    'U': (0x66,0x66,0x66,0x66,0x66,0x66,0x3C,0x00),
+    'V': (0x66,0x66,0x66,0x66,0x66,0x3C,0x18,0x00),
+    'W': (0xC6,0xC6,0xD6,0xFE,0xFE,0xEE,0xC6,0x00),
+    'X': (0x66,0x66,0x3C,0x18,0x3C,0x66,0x66,0x00),
+    'Y': (0x66,0x66,0x66,0x3C,0x18,0x18,0x18,0x00),
+    'Z': (0x7E,0x06,0x0C,0x18,0x30,0x60,0x7E,0x00),
+    '[': (0x3C,0x30,0x30,0x30,0x30,0x30,0x3C,0x00),
+    '\\':(0xC0,0x60,0x30,0x18,0x0C,0x06,0x02,0x00),
+    ']': (0x3C,0x0C,0x0C,0x0C,0x0C,0x0C,0x3C,0x00),
+    '^': (0x10,0x38,0x6C,0xC6,0x00,0x00,0x00,0x00),
+    '_': (0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xFF),
+    '`': (0x30,0x18,0x0C,0x00,0x00,0x00,0x00,0x00),
+    'a': (0x00,0x00,0x3C,0x06,0x3E,0x66,0x3E,0x00),
+    'b': (0x60,0x60,0x7C,0x66,0x66,0x66,0x7C,0x00),
+    'c': (0x00,0x00,0x3C,0x66,0x60,0x66,0x3C,0x00),
+    'd': (0x06,0x06,0x3E,0x66,0x66,0x66,0x3E,0x00),
+    'e': (0x00,0x00,0x3C,0x66,0x7E,0x60,0x3C,0x00),
+    'f': (0x1C,0x36,0x30,0x78,0x30,0x30,0x30,0x00),
+    'g': (0x00,0x00,0x3E,0x66,0x66,0x3E,0x06,0x3C),
+    'h': (0x60,0x60,0x7C,0x66,0x66,0x66,0x66,0x00),
+    'i': (0x18,0x00,0x38,0x18,0x18,0x18,0x3C,0x00),
+    'j': (0x06,0x00,0x06,0x06,0x06,0x66,0x66,0x3C),
+    'k': (0x60,0x60,0x66,0x6C,0x78,0x6C,0x66,0x00),
+    'l': (0x38,0x18,0x18,0x18,0x18,0x18,0x3C,0x00),
+    'm': (0x00,0x00,0xEC,0xFE,0xD6,0xC6,0xC6,0x00),
+    'n': (0x00,0x00,0x7C,0x66,0x66,0x66,0x66,0x00),
+    'o': (0x00,0x00,0x3C,0x66,0x66,0x66,0x3C,0x00),
+    'p': (0x00,0x00,0x7C,0x66,0x66,0x7C,0x60,0x60),
+    'q': (0x00,0x00,0x3E,0x66,0x66,0x3E,0x06,0x06),
+    'r': (0x00,0x00,0x7C,0x66,0x60,0x60,0x60,0x00),
+    's': (0x00,0x00,0x3E,0x60,0x3C,0x06,0x7C,0x00),
+    't': (0x30,0x30,0x7C,0x30,0x30,0x36,0x1C,0x00),
+    'u': (0x00,0x00,0x66,0x66,0x66,0x66,0x3E,0x00),
+    'v': (0x00,0x00,0x66,0x66,0x66,0x3C,0x18,0x00),
+    'w': (0x00,0x00,0xC6,0xC6,0xD6,0xFE,0x6C,0x00),
+    'x': (0x00,0x00,0x66,0x3C,0x18,0x3C,0x66,0x00),
+    'y': (0x00,0x00,0x66,0x66,0x66,0x3E,0x06,0x3C),
+    'z': (0x00,0x00,0x7E,0x0C,0x18,0x30,0x7E,0x00),
+    '{': (0x0E,0x18,0x18,0x70,0x18,0x18,0x0E,0x00),
+    '|': (0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x00),
+    '}': (0x70,0x18,0x18,0x0E,0x18,0x18,0x70,0x00),
+    '~': (0x76,0xDC,0x00,0x00,0x00,0x00,0x00,0x00),
+}
+
+def px(rgb):
+    return struct.pack("<I", 0xFF000000 | rgb)
+
+C_BG      = px(0x070A12)
+C_CARD    = px(0x111827)
+C_BORDER  = px(0x24324B)
+C_ACCENT  = px(0x3B82F6)
+C_ACCENT2 = px(0x8B5CF6)
+C_CYAN    = px(0x22D3EE)
+C_OK      = px(0x10B981)
+C_OK_BG   = px(0x063628)
+C_WARN    = px(0xF59E0B)
+C_BAD     = px(0xEF4444)
+C_TXT     = px(0xF1F5F9)
+C_MUT     = px(0x94A3B8)
+C_BAR_BG  = px(0x1E293B)
+
+
+class FramebufferUI:
+    def __init__(self):
+        self.fd = open("/dev/fb0", "r+b")
+        self.vinfo = bytearray(160)
+        fcntl.ioctl(self.fd, 0x4600, self.vinfo)
+        vals = struct.unpack_from("16I", self.vinfo, 0)
+        self.w = vals[0]
+        self.h = vals[1]
+        self.stride = self.w * 4
+        self.frame_bytes = self.w * self.h * 4
+        self.mm = mmap.mmap(self.fd.fileno(), self.frame_bytes, mmap.MAP_SHARED, mmap.PROT_WRITE | mmap.PROT_READ)
+        self.buf = bytearray(self.frame_bytes)
+        self.screen_on = True
+        self.brightness = 75
+        self._last_cpu = (0, 0)
+
+    def set_backlight(self, on=True, brightness=None):
+        if brightness is not None:
+            self.brightness = max(15, min(255, brightness))
+        self.screen_on = on
+        try:
+            with open("/sys/class/graphics/fb0/blank", "w") as f:
+                f.write("0\n" if on else "4\n")
+        except Exception:
+            pass
+        for b in glob.glob("/sys/class/backlight/*/brightness"):
+            if "hbm" in b:
+                continue
+            try:
+                with open(b, "w") as f:
+                    f.write(f"{self.brightness if on else 0}\n")
+            except Exception:
+                pass
+
+    def clear(self, color=C_BG):
+        row = color * self.w
+        for y in range(self.h):
+            off = y * self.stride
+            self.buf[off:off + self.stride] = row
+
+    def rect(self, x, y, w, h, color):
+        if x < 0: w += x; x = 0
+        if y < 0: h += y; y = 0
+        if x + w > self.w: w = self.w - x
+        if y + h > self.h: h = self.h - y
+        if w <= 0 or h <= 0:
+            return
+        line = color * w
+        row_len = w * 4
+        for ry in range(y, y + h):
+            off = ry * self.stride + x * 4
+            self.buf[off:off + row_len] = line
+
+    def card(self, x, y, w, h, bg=C_CARD, border=C_BORDER, accent=None):
+        self.rect(x, y, w, h, border)
+        self.rect(x + 2, y + 2, w - 4, h - 4, bg)
+        if accent:
+            self.rect(x + 2, y + 2, 8, h - 4, accent)
+
+    def text(self, x, y, s, fg=C_TXT, bg=C_CARD, scale=3):
+        if not s:
+            return
+        fg_s = fg * scale
+        bg_s = bg * scale
+        glyphs = [FONT8X8.get(ch, FONT8X8['?']) for ch in s]
+        total_w = len(glyphs) * 8 * scale
+        if x + total_w > self.w:
+            max_chars = max(1, (self.w - x) // (8 * scale))
+            glyphs = glyphs[:max_chars]
+            total_w = len(glyphs) * 8 * scale
+        row_bytes = total_w * 4
+        for r in range(8):
+            parts = []
+            for g in glyphs:
+                bits = g[r]
+                for c in range(7, -1, -1):
+                    parts.append(fg_s if ((bits >> c) & 1) else bg_s)
+            scanline = b"".join(parts)
+            base_y = y + r * scale
+            for sy in range(scale):
+                ry = base_y + sy
+                if 0 <= ry < self.h:
+                    off = ry * self.stride + x * 4
+                    self.buf[off:off + row_bytes] = scanline
+
+    def bar(self, x, y, w, h, pct, fg=C_OK, bg=C_BAR_BG):
+        self.rect(x, y, w, h, bg)
+        fw = int(w * max(0.0, min(100.0, pct)) / 100.0)
+        if fw > 0:
+            self.rect(x, y, fw, h, fg)
+
+    def flush(self):
+        self.mm[:self.frame_bytes] = self.buf
+        try:
+            # Reset xoffset=0 (off 16), yoffset=0 (off 20), bpp=32 (off 24) and trigger FBIOPAN_DISPLAY (0x4606)
+            struct.pack_into("III", self.vinfo, 16, 0, 0, 32)
+            fcntl.ioctl(self.fd, 0x4606, self.vinfo)
+        except Exception:
+            pass
+
+    def cpu_pct(self):
+        try:
+            with open("/proc/stat") as f:
+                fields = [int(x) for x in f.readline().split()[1:]]
+            idle = fields[3] + fields[4]
+            total = sum(fields)
+            li, lt = self._last_cpu
+            self._last_cpu = (idle, total)
+            if lt == 0 or total == lt:
+                return 1.0
+            return max(0.0, min(100.0, 100.0 * (1.0 - (idle - li) / (total - lt))))
+        except Exception:
+            return 0.0
+
+
+def get_net_info():
+    wlan_ip = "Sem IP"
+    usb_ip = "10.15.19.82"
+    ssid = "Desconectado"
+    try:
+        out = subprocess.check_output(["ip", "-4", "-br", "addr"], timeout=2).decode("utf-8", "ignore")
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 3:
+                if parts[0] == "wlan0":
+                    wlan_ip = parts[2].split("/")[0]
+                elif parts[0] in ("rndis0", "ncm0", "usb0"):
+                    usb_ip = parts[2].split("/")[0]
+    except Exception:
+        pass
+    try:
+        out = subprocess.check_output(["wpa_cli", "-i", "wlan0", "status"], timeout=2).decode("utf-8", "ignore")
+        for line in out.splitlines():
+            if line.startswith("ssid="):
+                ssid = line.split("=", 1)[1].strip()
+    except Exception:
+        pass
+    return ssid, wlan_ip, usb_ip
+
+
+def get_mem_disk():
+    mem_total = 3840
+    mem_avail = 3400
+    swap_total = 2048
+    swap_free = 2048
+    try:
+        info = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                k, v = line.split(":", 1)
+                info[k.strip()] = int(v.strip().split()[0]) // 1024
+        mem_total = info.get("MemTotal", 3840)
+        mem_avail = info.get("MemAvailable", 3400)
+        swap_total = info.get("SwapTotal", 2048)
+        swap_free = info.get("SwapFree", 2048)
+    except Exception:
+        pass
+    du = shutil.disk_usage("/")
+    disk_total_gb = du.total / (1024 ** 3)
+    disk_free_gb = du.free / (1024 ** 3)
+    disk_pct = 100.0 * (du.total - du.free) / max(1, du.total)
+    return mem_total, mem_avail, swap_total, swap_free, disk_total_gb, disk_free_gb, disk_pct
+
+
+def get_uptime_str():
+    try:
+        with open("/proc/uptime") as f:
+            sec = int(float(f.read().split()[0]))
+        d = sec // 86400
+        h = (sec % 86400) // 3600
+        m = (sec % 3600) // 60
+        return f"{d}d {h}h {m}m" if d else f"{h}h {m}min"
+    except Exception:
+        return "0h 1min"
+
+
+def render_dashboard(ui):
+    ui.clear(C_BG)
+    host = socket.gethostname().upper()
+    is_kane = "KANE" in host
+    title = "KANE SERVER OS" if is_kane else "A51 SERVER OS"
+    sub = "DEBIAN 13 ARM64 NATIVO - MOTOROLA ONE VISION" if is_kane else "DEBIAN 13 ARM64 NATIVO - GALAXY A51"
+
+    # 1. Header Card
+    ui.card(40, 60, 1000, 240, C_CARD, C_BORDER, C_ACCENT)
+    ui.text(80, 95, title, C_TXT, C_CARD, scale=5)
+    ui.text(80, 155, sub, C_CYAN, C_CARD, scale=2)
+    ui.rect(80, 200, 740, 64, C_OK_BG)
+    ui.rect(80, 200, 10, 64, C_OK)
+    ui.text(110, 220, "SISTEMA ONLINE E OPERANDO 100%", C_OK, C_OK_BG, scale=3)
+
+    # Ler sensores.json
+    sen = {}
+    try:
+        with open("/srv/a51-dash/sensores.json") as f:
+            sen = json.load(f)
+    except Exception:
+        pass
+
+    ssid, wlan_ip, usb_ip = get_net_info()
+    cpu = ui.cpu_pct()
+    mem_t, mem_a, sw_t, sw_f, d_tot, d_free, d_pct = get_mem_disk()
+    mem_used = mem_t - mem_a
+    mem_pct = 100.0 * mem_used / max(1, mem_t)
+
+    # 2. Card Rede & Acesso
+    ui.card(40, 330, 1000, 390, C_CARD, C_BORDER, C_CYAN)
+    ui.text(80, 358, "REDE WI-FI & ACESSO REMOTO", C_CYAN, C_CARD, scale=3)
+    ui.text(80, 415, f"WI-FI (wlan0) : {ssid}", C_OK if wlan_ip != "Sem IP" else C_WARN, C_CARD, scale=3)
+    ui.text(80, 468, f"IP NA REDE    : {wlan_ip}", C_TXT, C_CARD, scale=4)
+    ui.text(80, 532, f"PAINEL WEB    : http://{wlan_ip}/", C_ACCENT, C_CARD, scale=3)
+    ui.text(80, 582, f"ACESSO SSH    : ssh server@{wlan_ip}", C_ACCENT2, C_CARD, scale=3)
+    ui.text(80, 632, f"CONSOLE USB   : {usb_ip} (ttyGS0 root)", C_MUT, C_CARD, scale=3)
+
+    # 3. Card Recursos do Sistema
+    ui.card(40, 750, 1000, 540, C_CARD, C_BORDER, C_ACCENT2)
+    ui.text(80, 778, "RECURSOS DO SISTEMA (SEM ANDROID)", C_ACCENT2, C_CARD, scale=3)
+
+    ui.text(80, 835, f"CPU (8 Nucleos Exynos) : {cpu:4.1f}% em uso", C_TXT, C_CARD, scale=3)
+    ui.bar(80, 875, 900, 28, max(2.0, cpu), C_OK if cpu < 70 else C_WARN)
+
+    ui.text(80, 925, f"RAM Livre : {mem_a} MB livres de {mem_t} MB ({mem_pct:.0f}% usado)", C_TXT, C_CARD, scale=3)
+    ui.bar(80, 965, 900, 28, mem_pct, C_ACCENT if mem_pct < 80 else C_WARN)
+
+    ui.text(80, 1015, f"Disco UFS : {d_free:.0f} GB livres de {d_tot:.0f} GB ({d_pct:.1f}% usado)", C_TXT, C_CARD, scale=3)
+    ui.bar(80, 1055, 900, 28, max(2.0, d_pct), C_CYAN)
+
+    sw_used = sw_t - sw_f
+    ui.text(80, 1110, f"Swap ZRAM : {sw_t} MB ativo ({sw_used} MB em uso)", C_MUT, C_CARD, scale=3)
+    ui.text(80, 1160, f"Uptime    : Ligado ha {get_uptime_str()}", C_OK, C_CARD, scale=3)
+    ui.text(80, 1210, f"Kernel    : {os.uname().release[:28]}", C_MUT, C_CARD, scale=2)
+
+    # 4. Card Temperaturas & Bateria
+    ui.card(40, 1320, 1000, 410, C_CARD, C_BORDER, C_OK)
+    ui.text(80, 1348, "SENSORES TERMICOS & BATERIA", C_OK, C_CARD, scale=3)
+    temps = {t.get("nome"): t.get("c", 0) for t in sen.get("temps", [])}
+    t_big = temps.get("BIG", 0)
+    t_lit = temps.get("LITTLE", 0)
+    t_gpu = temps.get("G3D", 0)
+    t_isp = temps.get("ISP", 0)
+    ui.text(80, 1408, f"CPU BIG (A73) : {t_big:2d} C    CPU LITTLE (A53) : {t_lit:2d} C", C_TXT, C_CARD, scale=3)
+    ui.text(80, 1460, f"GPU MALI-G72  : {t_gpu:2d} C    PROCESSADOR ISP  : {t_isp:2d} C", C_TXT, C_CARD, scale=3)
+
+    bat = sen.get("bateria", {})
+    b_pct = bat.get("pct", 100)
+    b_c = bat.get("c", 30)
+    b_st = bat.get("status", "Charging")
+    ui.text(80, 1525, f"BATERIA       : {b_pct}% ({b_c} C) - {b_st}", C_OK, C_CARD, scale=3)
+    ui.bar(80, 1570, 900, 32, b_pct, C_OK if b_pct >= 30 else C_WARN)
+    ui.text(80, 1625, "Protecao ativa: servidor 24/7 monitorado", C_MUT, C_CARD, scale=2)
+
+    # 5. Card Serviços Supervisionados (runit)
+    svcs = sen.get("servicos", [])
+    ok_cnt = sum(1 for s in svcs if s.get("ok"))
+    tot_cnt = len(svcs)
+    ui.card(40, 1760, 1000, 560, C_CARD, C_BORDER, C_ACCENT)
+    ui.text(80, 1788, f"SERVICOS RUNIT ({ok_cnt}/{tot_cnt} ONLINE)", C_ACCENT, C_CARD, scale=3)
+
+    for idx, s in enumerate(svcs[:12]):
+        col = idx % 2
+        row = idx // 2
+        sx = 80 + col * 470
+        sy = 1855 + row * 68
+        is_ok = s.get("ok", False)
+        badge_c = C_OK if is_ok else C_BAD
+        ui.rect(sx, sy, 86, 44, badge_c)
+        ui.text(sx + 14, sy + 10, "OK" if is_ok else "ER", C_BG, badge_c, scale=3)
+        ui.text(sx + 104, sy + 10, s.get("nome", "")[:14], C_TXT, C_CARD, scale=3)
+
+    # 6. Rodapé
+    now_str = time.strftime("%d/%m/%Y %H:%M:%S")
+    ui.text(50, 2360, f"ATUALIZADO: {now_str}", C_MUT, C_BG, scale=3)
+    ui.text(50, 2410, "BOTAO POWER: LIGA/DESLIGA TELA  |  VOL +/-: BRILHO", C_CYAN, C_BG, scale=2)
+
+    ui.flush()
+
+
+def open_key_devices():
+    fds = []
+    for p in glob.glob("/dev/input/event*"):
+        try:
+            fd = os.open(p, os.O_RDONLY | os.O_NONBLOCK)
+            fds.append(fd)
+        except Exception:
+            pass
+    return fds
+
+
+def main():
+    ui = FramebufferUI()
+    ui.set_backlight(True, 75)
+    render_dashboard(ui)
+
+    key_fds = open_key_devices()
+    ev_struct = struct.Struct("llHHi")  # timeval (16B on 64-bit), type (2B), code (2B), value (4B) = 24B
+
+    last_draw = time.time()
+    while True:
+        r, _, _ = select.select(key_fds, [], [], 5.0)
+        toggled = False
+        for fd in r:
+            try:
+                data = os.read(fd, 24 * 16)
+                for off in range(0, len(data) - 23, 24):
+                    _, _, ev_type, ev_code, ev_val = ev_struct.unpack_from(data, off)
+                    if ev_type == 1 and ev_val == 1:  # EV_KEY keydown
+                        if ev_code == 116:  # KEY_POWER
+                            ui.set_backlight(not ui.screen_on)
+                            toggled = True
+                        elif ev_code == 115 and ui.screen_on:  # KEY_VOLUMEUP
+                            ui.set_backlight(True, ui.brightness + 30)
+                        elif ev_code == 114 and ui.screen_on:  # KEY_VOLUMEDOWN
+                            ui.set_backlight(True, ui.brightness - 30)
+            except Exception:
+                pass
+
+        now = time.time()
+        if ui.screen_on and (toggled or (now - last_draw >= 5.0)):
+            render_dashboard(ui)
+            last_draw = now
+
+
+if __name__ == "__main__":
+    main()

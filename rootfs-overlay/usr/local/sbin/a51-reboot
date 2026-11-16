@@ -10,7 +10,8 @@ echo "parando serviços..."
 sv -w 15 force-stop /etc/service-native/* >/dev/null 2>&1 || true
 sync; sleep 1; sync
 case "${1:-reboot}" in
-  poweroff)          exec busybox poweroff -f ;;
-  recovery|download) exec /usr/local/sbin/a51-reboot-reason "$1" ;;   # reboot(2) RESTART2 com o motivo
-  *)                 exec busybox reboot -f ;;
+  poweroff)                    exec busybox poweroff -f ;;
+  recovery|download|bootloader) exec /usr/local/sbin/a51-reboot-reason "$1" ;;   # reboot(2) RESTART2 com o motivo
+  fastboot)                    exec /usr/local/sbin/a51-reboot-reason bootloader ;;
+  *)                           exec busybox reboot -f ;;
 esac

@@ -115,9 +115,9 @@
       <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"><rect x="6" y="2" width="12" height="20" rx="2.5"/><path d="M10.5 18.5h3"/><path d="M9 7h6M9 10h6M9 13h4"/></svg>
     </div>
     <div>
-      <h1>A51 <span>Server</span></h1>
-      <div class="tag">Debian 13 nativo num Samsung Galaxy A51 · sem Android</div>
-      <div class="chips"><span class="chip">Exynos 9611</span><span class="chip">8 núcleos ARM64</span><span class="chip" id="chip-ram">RAM</span><span class="chip">runit</span><span class="chip" id="chip-host">a51-server</span></div>
+      <h1 id="brand-title">A51 <span>Server</span></h1>
+      <div class="tag" id="brand-tag">Debian 13 nativo num Samsung Galaxy A51 · sem Android</div>
+      <div class="chips"><span class="chip" id="chip-soc">Exynos 9611</span><span class="chip">8 núcleos ARM64</span><span class="chip" id="chip-ram">RAM</span><span class="chip">runit</span><span class="chip" id="chip-host">a51-server</span></div>
     </div>
   </div>
   <div class="live"><span class="dot" id="dot"></span><span id="st">conectando…</span></div>
@@ -212,7 +212,8 @@ const NOMES = { BIG: 'CPU desempenho (A73)', LITTLE: 'CPU econômica (A53)', G3D
 const ST = { Charging: 'Carregando', Discharging: 'Na bateria', Full: 'Completa', 'Not charging': 'Pausada no limite' };
 const SVC = {
   wpa: 'Wi-Fi', dhcp: 'DHCP', ssh: 'SSH', chrony: 'Relógio (NTP)', usbcon: 'Console USB', usbdhcp: 'Rede USB',
-  bootlog: 'Logs do boot', glances: 'Glances', dash: 'Este painel', 'dash-sensores': 'Sensores', webmin: 'Webmin'
+  bootlog: 'Logs do boot', glances: 'Glances', dash: 'Este painel', 'dash-sensores': 'Sensores',
+  fbstatus: 'Tela Física', webmin: 'Webmin'
 };
 const SISTEMA = new Set(Object.keys(SVC));
 
@@ -234,7 +235,15 @@ async function atualizar() {
       ['cpu', 'percpu', 'mem', 'memswap', 'load', 'fs', 'network', 'uptime', 'system'].map(e => get(e).catch(() => null)));
     let sen = null; try { sen = await (await fetch('/sensores.json', { cache: 'no-store' })).json(); } catch (e) {}
     el('dot').classList.remove('off'); el('st').textContent = 'online · ' + new Date().toLocaleTimeString('pt-BR');
-    if (sys) el('chip-host').textContent = sys.hostname || 'a51-server';
+    if (sys) {
+      el('chip-host').textContent = sys.hostname || 'a51-server';
+      if ((sys.hostname || '').includes('kane')) {
+        document.title = 'Kane Server · Debian nativo';
+        el('brand-title').innerHTML = 'Kane <span>Server</span>';
+        el('brand-tag').textContent = 'Debian 13 nativo num Motorola One Vision · sem Android';
+        el('chip-soc').textContent = 'Exynos 9609';
+      }
+    }
 
     if (up) { const s = uptimeSeg(up); el('k-up').textContent = dur(s); }
     if (mem) {
